@@ -1,4 +1,52 @@
-docker-build:
+name: CI Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  DOTNET_VERSION: '8.0.x'
+
+jobs:
+  # ==========================================
+  # JOB 1: Build y Test de .NET
+  # ==========================================
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+      
+      - name: 🔧 Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+      
+      - name: 📦 Restore dependencies
+        run: dotnet restore MyApi.csproj
+      
+      - name: 🏗️ Build
+        run: dotnet build MyApi.csproj --configuration Release --no-restore
+      
+      - name: 🧪 Test
+        run: dotnet test MyApi.csproj --no-build --verbosity normal --configuration Release
+      
+      - name: 📊 Upload build artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-build
+          path: bin/Release/
+          retention-days: 3
+
+  # ==========================================
+  # JOB 2: Build de Docker Image
+  # ==========================================
+  docker-build:
     name: Docker Build
     runs-on: ubuntu-latest
     needs: build-and-test
@@ -7,62 +55,86 @@ docker-build:
       - name: 📥 Checkout code
         uses: actions/checkout@v4
       
-      # ⭐ NUEVO: Ver estructura del proyecto
-      - name: 🔍 Debug - List project structure
+      # ⭐ DEBUG: Ver estructura
+      - name: 🔍 Debug - Project structure
         run: |
           echo "📁 Current directory:"
           pwd
           echo ""
-          echo "📂 Files in root:"
+          echo "📂 Root files:"
           ls -la
           echo ""
-          echo "📄 Dockerfile content:"
-          cat Dockerfile
+          echo "📄 Checking Dockerfile:"
+          if [ -f "Dockerfile" ]; then
+            echo "✅ Dockerfile found"
+            head -20 Dockerfile
+          else
+            echo "❌ Dockerfile NOT found!"
+            exit 1
+          fi
+          echo ""
+          echo "📄 Checking .csproj:"
+          if [ -f "MyApi.csproj" ]; then
+            echo "✅ MyApi.csproj found"
+          else
+            echo "❌ MyApi.csproj NOT found!"
+            exit 1
+          fi
       
-      - name: 🐳 Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      
-      # ⭐ MODIFICADO: Build con más verbose
+      # ⭐ BUILD MANUAL (no usar action)
       - name: 🏗️ Build Docker image
         run: |
           echo "🔨 Building Docker image..."
-          docker build --progress=plain -t myapi:${{ github.sha }} . 2>&1 | tee build.log
+          docker build --progress=plain -t myapi:${{ github.sha }} -f Dockerfile . 2>&1
           
-          echo ""
-          echo "✅ Build completed. Verifying image..."
-          docker images | grep myapi || echo "❌ Image not found!"
+          if [ $? -eq 0 ]; then
+            echo "✅ Docker build successful"
+            docker images | grep myapi
+          else
+            echo "❌ Docker build FAILED"
+            exit 1
+          fi
       
+      # ⭐ TEST: Probar la imagen
       - name: 🧪 Test Docker image
         run: |
           echo "🚀 Starting container..."
           docker run -d -p 8080:8080 --name test-container myapi:${{ github.sha }}
           
+          echo ""
           echo "📋 Container status:"
           docker ps -a
+          
+          echo ""
+          echo "⏳ Waiting 20 seconds for app to start..."
+          sleep 20
           
           echo ""
           echo "📄 Container logs:"
           docker logs test-container
           
           echo ""
-          echo "⏳ Waiting 15 seconds for app to start..."
-          sleep 15
-          
           echo "🔍 Testing health endpoint..."
-          curl -v http://localhost:8080/health || {
-            echo "❌ Health check failed. Container logs:"
+          if curl -f -v http://localhost:8080/health; then
+            echo "✅ Health check passed"
+          else
+            echo "❌ Health check FAILED"
+            echo ""
+            echo "Container logs:"
             docker logs test-container
             exit 1
-          }
+          fi
           
           echo ""
           echo "🔍 Testing weatherforecast endpoint..."
-          curl -v http://localhost:8080/weatherforecast || {
-            echo "❌ API test failed. Container logs:"
+          if curl -f http://localhost:8080/weatherforecast; then
+            echo "✅ API endpoint passed"
+          else
+            echo "❌ API endpoint FAILED"
             docker logs test-container
             exit 1
-          }
+          fi
           
           echo ""
-          echo "✅ All tests passed!"
+          echo "🎉 All tests passed!"
           docker stop test-container

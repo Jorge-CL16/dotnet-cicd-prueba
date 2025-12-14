@@ -1,0 +1,10 @@
+cat > .dockerignore << 'EOF'
+bin/
+obj/
+.vs/
+.vscode/
+.idea/
+.git/
+*.log
+*.md
+EOF
